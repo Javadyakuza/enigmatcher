@@ -58,13 +58,18 @@ pub struct User<T:  WS>
 // mapping the entrance fees to the wallet addresses requesting for a game
 type Queue<T> = Arc<Mutex<HashMap<i32, Vec<User<T>>>>>;
 
+pub enum FindMatchResponse<T: WS> {
+    Wait(String),
+    FoundMatch(Vec<User<T>>), 
+    Undefined(String),
+
+}
 pub trait QueueOperations<T: WS> {
-    async fn find_match(_user: User<T>, _entrance_tokens: i32, _queue: Queue<T>){}
-    fn remove(){}
+    async fn find_match(_user: User<T>, _entrance_tokens: i32, _queue: Queue<T>) -> FindMatchResponse<T>;
 }
 impl<T: WS> QueueOperations<T> for Queue<T> {
 // this will search for the matches and if found it will return the contestant user address for the game room and if not will add the user to the queue.
-    async fn find_match(_user: User<T>, _entrance_tokens: i32, _queue: Queue<T> ) {
+    async fn find_match(_user: User<T>, _entrance_tokens: i32, _queue: Queue<T> ) -> FindMatchResponse<T> {
         // getting the lock over the queue
         let mut _q = _queue.lock().await;  
          // Get the list of users for the given entrance tokens
@@ -74,25 +79,23 @@ impl<T: WS> QueueOperations<T> for Queue<T> {
         0 => {
             // No users in the queue, add the user
             users.push(_user);
-            println!("User added to the queue. Needs to wait for a match.");
+            FindMatchResponse::Wait("Added User, wait ...".into())
         }
         1 => {
             // One user in the queue
             if users[0].address == _user.address {
-                println!("User needs to wait for a match.");
+                FindMatchResponse::Wait("No one found, wait ...".into())
             } else {
                 // Match found with the existing user
                 let matched_user = users.pop().unwrap();
-                println!("Match found between {:?} and {:?}", matched_user, _user);
-                // Return the match
+                FindMatchResponse::FoundMatch(vec![matched_user, _user])
             }
         }
         _ => {
             if let Some((index, _)) = users.iter().enumerate().find(|(_, u)| u.address != _user.address) {
                 // Remove the matched user and the requesting user
                 let matched_user = users.remove(index);
-                println!("Match found between {:?} and {:?}", matched_user, _user);
-                // Return the match or handle the matched pair here
+                FindMatchResponse::FoundMatch(vec![matched_user, _user])
             } else {
                 panic!("impossible panic !!")
             }
