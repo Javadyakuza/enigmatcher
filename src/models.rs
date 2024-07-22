@@ -1,106 +1,106 @@
-
-// --- MODELS --- // 
+// --- MODELS --- //
 
 // the below struct represents the on-going matche
 // the clients will interactively set the questions result based on the below struct format on the state.
 // the struct will have the update and finish game room functionlaities.
 // the struct must have a function that will finilize the game room. the transaction part i mean.
 
-use std::{collections::HashMap, io::{Read, Write}, sync::Arc};
+use std::{
+    collections::HashMap, default, hash::Hash, io::{Read, Write}, sync::Arc
+};
 
-use futures_util::{stream::{SplitSink, SplitStream}, AsyncRead, AsyncWrite, Sink, Stream};
-use tokio::sync::Mutex;
-use tokio_tungstenite::{ tungstenite::stream::MaybeTlsStream, WebSocketStream};
+use futures_channel::mpsc;
+use futures_util::{
+    stream::{SplitSink, SplitStream},
+    AsyncRead, AsyncWrite, Future, Sink, Stream,
+};
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug as DebugTrait;
-
+use tokio::sync::Mutex;
+use tokio_tungstenite::{tungstenite::{stream::MaybeTlsStream, Message}, WebSocketStream};
+// use futures_util::Future;
 // the ongoing matche must be saved in a state so that we know the users can have a game in two different dvices.
-pub trait WS: Read + Write + Unpin + DebugTrait{}
-pub struct OngoingMatch<T: WS>  {
+#[derive(Default)]
+pub struct OngoingMatch {
     pub reward: i32,
-    pub user_1: User<T>,  
-    pub user_2: User<T>, 
-
+    pub user: User,
+    pub contestant: User,
 }
 
-// impl OngoingMatch {
-//     // only returns false when a use is done answering.
-//     pub fn update_result(&mut self, user: &str, q_res: bool) -> bool{
-//     if !user.eq(&self.user_1.address) {
-//         if self.user_2.result.len() < 3 {
-//             self.user_2.result.push(q_res);
-//         return true;
-//         } 
-//         return false;       
-//     } 
-//     if self.user_1.result.len() < 3 {
-//         self.user_1.result.push(q_res);
-//         return true;
-//     } 
-//     false
-// }
+impl OngoingMatch {
+    // only returns false when a use is done answering.
+    pub fn update_result(&mut self, user: &str, q_res: bool) -> bool {
+        if !user.eq(&self.user.address) {
+            if self.contestant.result.len() < 3 {
+                self.contestant.result.push(q_res);
+                return true;
+            }
+            return false;
+        }
+        if self.user.result.len() < 3 {
+            self.user.result.push(q_res);
+            return true;
+        }
+        false
+    }
+}
 
-// }
-// the user will be inititated during the match and will be dropped after the match is over.
-#[derive(Debug)]
-pub struct User<T:  WS> 
-{
-    pub address: String, 
+// the user will be initiated during the match and will be dropped after the match is over.
+#[derive(Debug, Default, Clone)]
+pub struct User {
+    pub address: String,
     pub result: Vec<bool>,
-    pub ws_socket: WebSocketStream<MaybeTlsStream<T>>
+    // 1 for true 0 for false
+    pub thread_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
 }
 
 // --- STATE TYPES --- //
 
 // users will request to the server and the server will save their data in the queue.
-// and if a matach was found the match will be started.
+// and if a match was found the match will be started.
 // and if there was no other user already in the queue, the user will be added to the queue.
 
+
 // mapping the entrance fees to the wallet addresses requesting for a game
-type Queue<T> = Arc<Mutex<HashMap<i32, Vec<User<T>>>>>;
-
-pub enum FindMatchResponse<T: WS> {
-    Wait(String),
-    FoundMatch(Vec<User<T>>), 
-    Undefined(String),
-
+pub type Queue = Arc<Mutex<HashMap<i32, Vec<User>>>>;
+pub trait New {
+    fn new_empty() -> Self;
 }
-pub trait QueueOperations<T: WS> {
-    async fn find_match(_user: User<T>, _entrance_tokens: i32, _queue: Queue<T>) -> FindMatchResponse<T>;
-}
-impl<T: WS> QueueOperations<T> for Queue<T> {
-// this will search for the matches and if found it will return the contestant user address for the game room and if not will add the user to the queue.
-    async fn find_match(_user: User<T>, _entrance_tokens: i32, _queue: Queue<T> ) -> FindMatchResponse<T> {
-        // getting the lock over the queue
-        let mut _q = _queue.lock().await;  
-         // Get the list of users for the given entrance tokens
-    let users = _q.entry(_entrance_tokens).or_insert_with(Vec::new);
-
-    match users.len() {
-        0 => {
-            // No users in the queue, add the user
-            users.push(_user);
-            FindMatchResponse::Wait("Added User, wait ...".into())
-        }
-        1 => {
-            // One user in the queue
-            if users[0].address == _user.address {
-                FindMatchResponse::Wait("No one found, wait ...".into())
-            } else {
-                // Match found with the existing user
-                let matched_user = users.pop().unwrap();
-                FindMatchResponse::FoundMatch(vec![matched_user, _user])
-            }
-        }
-        _ => {
-            if let Some((index, _)) = users.iter().enumerate().find(|(_, u)| u.address != _user.address) {
-                // Remove the matched user and the requesting user
-                let matched_user = users.remove(index);
-                FindMatchResponse::FoundMatch(vec![matched_user, _user])
-            } else {
-                panic!("impossible panic !!")
-            }
-        }
+impl New for Queue {
+    fn new_empty() -> Self {
+        let hm: HashMap<i32, Vec<User>> = HashMap::new();
+        Arc::new(Mutex::new(hm))
     }
 }
 
+pub enum MatchResponse {
+    Added(usize),
+    Wait(String),
+    FoundMatch(Vec<User>),
+    UpdatedResult(Vec<bool>),
+    Done(Vec<bool>),
+    Undefined(String),
+}
+
+impl Default for MatchResponse {
+    fn default() -> Self {
+        Self::Undefined("Undefined".to_string())
+    }
+}
+
+impl Future for MatchResponse {
+    type Output = Self;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        todo!()
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct IncomingUser {
+    pub wallet_address: String,
+    pub entrance_amount: i32,
 }
