@@ -85,8 +85,8 @@ impl New for WaitQueue {
 pub enum MatchResponse {
     Added(usize),
     Wait(String),
-    FoundMatch(Vec<String>),
-    UpdatedResult(Vec<bool>),
+    FoundMatch(Vec<User>),
+    UpdateResult(Vec<bool>),
     Done(Vec<bool>),
     Undefined(String),
 }
@@ -108,15 +108,16 @@ impl Default for MatchResponse {
 //     }
 // }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct IncomingUser {
     pub wallet_address: String,
     pub entrance_amount: i32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub enum InnerMsg {
     Fetch{}, 
     Update{res: bool},
-    Handshake {}
+    HandshakeInit {user: String}, // the initiator address
+    HandshakeStablish {user: String} // the initiating address
 }
