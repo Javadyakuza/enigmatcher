@@ -15,7 +15,6 @@ use futures_util::{
     AsyncRead, AsyncWrite, Future, Sink, Stream,
 };
 use serde::{Deserialize, Serialize};
-use std::fmt::Debug as DebugTrait;
 use tokio::sync::Mutex;
 use tokio_tungstenite::{tungstenite::{stream::MaybeTlsStream, Message}, WebSocketStream};
 // use futures_util::Future;
@@ -66,11 +65,11 @@ pub trait New {
 
 // mapping the entrance fees to the wallet addresses requesting for a game
 pub type WaitQueue = Arc<Mutex<HashMap<i32, Vec<User>>>>;
-pub type FoundQueue = Arc<Mutex<HashMap<String, Vec<User>>>>;
+pub type FoundQueue = Arc<Mutex<HashMap<String, User>>>;
 
 impl New for FoundQueue {
     fn new_empty() -> Self {
-        let hm: HashMap<String, Vec<User>> = HashMap::new();
+        let hm: HashMap<String, User> = HashMap::new();
         Arc::new(Mutex::new(hm))
     }
 }
@@ -86,7 +85,7 @@ impl New for WaitQueue {
 pub enum MatchResponse {
     Added(usize),
     Wait(String),
-    FoundMatch(Vec<User>),
+    FoundMatch(Vec<String>),
     UpdatedResult(Vec<bool>),
     Done(Vec<bool>),
     Undefined(String),
@@ -113,4 +112,11 @@ impl Default for MatchResponse {
 pub struct IncomingUser {
     pub wallet_address: String,
     pub entrance_amount: i32,
+}
+
+#[derive(Serialize)]
+pub enum InnerMsg {
+    Fetch{}, 
+    Update{res: bool},
+    Handshake {}
 }

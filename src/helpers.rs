@@ -23,7 +23,7 @@ use tokio_tungstenite::{
     WebSocketStream,
 };
 
-use crate::models::{FoundQueue, IncomingUser, MatchResponse, OngoingMatch, User, WaitQueue};
+use crate::models::{Fetch, FoundQueue, IncomingUser, InnerMsg, MatchResponse, OngoingMatch, User, WaitQueue};
 
 pub type Tx = UnboundedSender<Message>;
 // pub type PeerMap = Arc<Mutex<HashMap<SocketAddr, Tx>>>;
@@ -84,11 +84,6 @@ pub async fn handle_connection(
                 }
                 MatchResponse::FoundMatch(users) => {
                     sending_message = Message::text(format!("{:?}", users));
-                    ongoing_match = OngoingMatch {
-                        user: users[1].clone(),
-                        contestant: users[0].clone(),
-                        reward: incoming_user.entrance_amount,
-                    };
                     // notifying the contestant thread that we are the its contestant  
                     // handshaking
 
@@ -142,7 +137,7 @@ pub async fn handle_connection(
         };
         future::ok(())
     });
-
+    
     // inner platform
     let receive_from_others = async {
         rx.map(|msg: Vec<u8>| {
@@ -196,7 +191,17 @@ pub async fn find_match(_user: User, _entrance_tokens: i32, wait_queue: WaitQueu
             } else {
                 // Match found with the existing user
                 let matched_user = users.pop().unwrap();
-                MatchResponse::FoundMatch(vec![matched_user, _user])
+                // telling each thread to pick their opponents
+                // adding the users to the found queue 
+                let mut fq = found_queue.lock().await;
+                fq.insert(matched_user.address.clone(), User {
+                    address: _user.address.clone(),  
+                    result: _user.result.clone(),
+                    thread_tx:  _user.thread_tx.clone(),
+                });
+
+                let _ = matched_user.thread_tx.unwrap().unbounded_send(bincode::serialize(&InnerMsg::Fetch {  }).unwrap()).unwrap();
+                MatchResponse::FoundMatch(vec![matched_user.address.clone(), _user.address.clone()])
             }
         }
         _ => {
@@ -207,8 +212,15 @@ pub async fn find_match(_user: User, _entrance_tokens: i32, wait_queue: WaitQueu
             {
                 // Remove the matched user and the requesting user
                 let matched_user = users.remove(index);
-                // notifying the non-sender user
-                MatchResponse::FoundMatch(vec![matched_user, _user])
+                let mut fq = found_queue.lock().await;
+                fq.insert(matched_user.address.clone(), User {
+                    address: _user.address.clone(),  
+                    result: _user.result.clone(),
+                    thread_tx:  _user.thread_tx.clone(),
+                });
+                
+                let _ = matched_user.thread_tx.unwrap().unbounded_send(bincode::serialize(&InnerMsg::Fetch {  }).unwrap()).unwrap();
+                MatchResponse::FoundMatch(vec![matched_user.address.clone(), _user.address.clone()])
             } else {
                 panic!("impossible panic !!")
             }
