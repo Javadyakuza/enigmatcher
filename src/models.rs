@@ -60,18 +60,28 @@ pub struct User {
 // and if a match was found the match will be started.
 // and if there was no other user already in the queue, the user will be added to the queue.
 
-
-// mapping the entrance fees to the wallet addresses requesting for a game
-pub type Queue = Arc<Mutex<HashMap<i32, Vec<User>>>>;
 pub trait New {
     fn new_empty() -> Self;
 }
-impl New for Queue {
+
+// mapping the entrance fees to the wallet addresses requesting for a game
+pub type WaitQueue = Arc<Mutex<HashMap<i32, Vec<User>>>>;
+pub type FoundQueue = Arc<Mutex<HashMap<String, Vec<User>>>>;
+
+impl New for FoundQueue {
+    fn new_empty() -> Self {
+        let hm: HashMap<String, Vec<User>> = HashMap::new();
+        Arc::new(Mutex::new(hm))
+    }
+}
+
+impl New for WaitQueue {
     fn new_empty() -> Self {
         let hm: HashMap<i32, Vec<User>> = HashMap::new();
         Arc::new(Mutex::new(hm))
     }
 }
+
 
 pub enum MatchResponse {
     Added(usize),
@@ -88,16 +98,16 @@ impl Default for MatchResponse {
     }
 }
 
-impl Future for MatchResponse {
-    type Output = Self;
+// impl Future for MatchResponse {
+//     type Output = Self;
 
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        todo!()
-    }
-}
+//     fn poll(
+//         self: std::pin::Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//     ) -> std::task::Poll<Self::Output> {
+//         todo!()
+//     }
+// }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct IncomingUser {

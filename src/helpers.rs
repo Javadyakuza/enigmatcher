@@ -15,13 +15,15 @@ use futures_util::{
     pin_mut, SinkExt, StreamExt, TryStreamExt,
 };
 use log::info;
-use tokio::net::{TcpListener, TcpStream};
+use rocket::http::ext::IntoCollection;
+use serde::Serialize;
+use tokio::{net::{TcpListener, TcpStream}, sync::mpsc::UnboundedReceiver};
 use tokio_tungstenite::{
     tungstenite::{Message, WebSocket},
     WebSocketStream,
 };
 
-use crate::models::{IncomingUser, MatchResponse, OngoingMatch, Queue, User};
+use crate::models::{FoundQueue, IncomingUser, MatchResponse, OngoingMatch, User, WaitQueue};
 
 pub type Tx = UnboundedSender<Message>;
 // pub type PeerMap = Arc<Mutex<HashMap<SocketAddr, Tx>>>;
@@ -30,7 +32,9 @@ pub async fn handle_connection(
     // peer_map: PeerMap,
     raw_stream: TcpStream,
     addr: SocketAddr,
-    _queue: Queue,
+    wait_queue: WaitQueue,
+    found_queue: FoundQueue
+
 ) {
     println!("Incoming TCP connection from: {}", addr);
 
@@ -43,7 +47,8 @@ pub async fn handle_connection(
     let (tx, rx) = unbounded();
     // peer_map.lock().unwrap().insert(addr, tx);
     let mut rx: futures_channel::mpsc::UnboundedReceiver<Vec<u8>> = rx;
-
+    println!("{:?}", tx);
+    
     let (mut outgoing, incoming) = ws_stream.split();
     let outgoing_multi = Arc::new(Mutex::new(outgoing));
 
@@ -64,7 +69,8 @@ pub async fn handle_connection(
                         thread_tx: Some(tx.clone()),
                     },
                     incoming_user.entrance_amount,
-                    _queue.clone(),
+                    wait_queue.clone(),
+                    found_queue.clone()
                 )
                 .await;
             };
@@ -84,6 +90,9 @@ pub async fn handle_connection(
                         reward: incoming_user.entrance_amount,
                     };
                     // notifying the contestant thread that we are the its contestant  
+                    // handshaking
+
+
                 }
                 MatchResponse::Undefined(msg) => {
                     sending_message = Message::text("undefined behavior accrued !!");
@@ -103,7 +112,7 @@ pub async fn handle_connection(
             let _ = ongoing_match.update_result(&user_addr.clone(), res);
 
             // notifying the contestant thread that we updated or results 
-
+            // recp.unbounded_send(msg.clone()).unwrap();
         }
 
         // let peers = peer_map.lock().unwrap();
@@ -155,6 +164,7 @@ pub async fn handle_connection(
                 };
             } else {
                 // in this case the result is 3 we just set update the result
+            
             }
         })
     };
@@ -167,9 +177,9 @@ pub async fn handle_connection(
     // peer_map.lock().unwrap().remove(&addr);
 }
 
-pub async fn find_match(_user: User, _entrance_tokens: i32, _queue: Queue) -> MatchResponse {
+pub async fn find_match(_user: User, _entrance_tokens: i32, wait_queue: WaitQueue, found_queue: FoundQueue) -> MatchResponse {
     // getting the lock over the queue
-    let mut _q = _queue.lock().await;
+    let mut _q = wait_queue.lock().await;
     // Get the list of users for the given entrance tokens
     let users = _q.entry(_entrance_tokens).or_insert_with(Vec::new);
 
@@ -197,6 +207,7 @@ pub async fn find_match(_user: User, _entrance_tokens: i32, _queue: Queue) -> Ma
             {
                 // Remove the matched user and the requesting user
                 let matched_user = users.remove(index);
+                // notifying the non-sender user
                 MatchResponse::FoundMatch(vec![matched_user, _user])
             } else {
                 panic!("impossible panic !!")
