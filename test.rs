@@ -1,29 +1,4 @@
-use std::{
-    io::Error,
-    net::SocketAddr,
-    sync::{Arc, Mutex},
-};
-
-use futures_channel::mpsc::{unbounded, UnboundedSender};
-use futures_util::{
-    future::{self},
-    pin_mut, SinkExt, StreamExt, TryFutureExt, TryStreamExt,
-};
-
-use tokio::net::TcpStream;
-
-use tokio_tungstenite::tungstenite::Message;
-
-use crate::models::{
-    FoundQueue, IncomingUser, InnerMsg, MatchResponse, OngoingMatch, OutcomingMsg, OutgoingMsg,
-    User, WaitQueue,
-};
-
-pub type Tx = UnboundedSender<Message>;
-// pub type PeerMap = Arc<Mutex<HashMap<SocketAddr, Tx>>>;
-
 pub async fn handle_connection(
-    // peer_map: PeerMap,
     raw_stream: TcpStream,
     addr: SocketAddr,
     wait_queue: WaitQueue,
@@ -36,9 +11,7 @@ pub async fn handle_connection(
         .expect("Error during the websocket handshake occurred");
     println!("WebSocket connection established: {}", addr);
 
-    // Insert the write part of this peer to the peer map.
     let (tx, rx) = unbounded();
-    // peer_map.lock().unwrap().insert(addr, tx);
     let rx: futures_channel::mpsc::UnboundedReceiver<Vec<u8>> = rx;
     println!("{:?}", tx);
 
@@ -47,13 +20,20 @@ pub async fn handle_connection(
 
     let ongoing_match: Arc<Mutex<OngoingMatch>> = Arc::new(Mutex::new(Default::default()));
     let thread_consumer: Arc<Mutex<IncomingUser>> = Arc::new(Mutex::new(Default::default()));
-    // web socket
+
     let broadcast_incoming = incoming.try_for_each(|msg| {
-        let mut match_responses: MatchResponse = Default::default();
-        let mut sending_message: Message = Message::text("initial text");
-        // println!("{:?}",&msg.clone().into_text().unwrap());
-        match serde_json::from_str(&msg.into_text().unwrap()).unwrap() {
-            OutcomingMsg::FindMatch { incoming_user } => {
+        let ongoing_match = ongoing_match.clone();
+        let outgoing_multi = outgoing_multi.clone();
+        let wait_queue = wait_queue.clone();
+        let found_queue = found_queue.clone();
+        let tx = tx.clone();
+
+        async move {
+            let mut match_responses: MatchResponse = Default::default();
+            let mut sending_message: Message = Message::text("initial text");
+
+            match serde_json::from_str(&msg.into_text().unwrap()).unwrap() {
+                OutcomingMsg::FindMatch { incoming_user } => {
                     println!("finding match for {:?}", incoming_user);
                     match_responses = find_match(
                         User {
@@ -62,14 +42,13 @@ pub async fn handle_connection(
                             thread_tx: Some(tx.clone()),
                         },
                         incoming_user.entrance_amount,
-                        wait_queue.clone(),
-                        found_queue.clone(),
+                        wait_queue,
+                        found_queue,
                     );
                     println!("result {:?}", match_responses);
 
                     match match_responses {
                         MatchResponse::Added(_) => {
-                            // telling user to wait
                             sending_message = Message::text(
                                 serde_json::to_string(&OutgoingMsg::Wait {
                                     msg: "added to queue, wait".into(),
@@ -83,31 +62,27 @@ pub async fn handle_connection(
                             );
                         }
                         MatchResponse::FoundMatch(users) => {
-                            let _ = async {
-                                let omc = ongoing_match.clone();
-                                let mut omc = omc.lock().unwrap();
+                            let omc = ongoing_match.clone();
+                            let mut omc = omc.lock().unwrap();
 
-                                *omc = OngoingMatch {
-                                    reward: incoming_user.entrance_amount,
-                                    user: users[1].clone(),
-                                    contestant: users[0].clone(),
-                                };
-
-                                // handshaking
-                                let _ = omc
-                                    .contestant
-                                    .thread_tx
-                                    .clone()
-                                    .unwrap()
-                                    .unbounded_send(
-                                        bincode::serialize(&&InnerMsg::Handshake {
-                                            user: omc.user.address.clone(),
-                                        })
-                                        .unwrap(),
-                                    )
-                                    .unwrap();
-                                drop(omc);
+                            *omc = OngoingMatch {
+                                reward: incoming_user.entrance_amount,
+                                user: users[1].clone(),
+                                contestant: users[0].clone(),
                             };
+
+                            omc.contestant
+                                .thread_tx
+                                .clone()
+                                .unwrap()
+                                .unbounded_send(
+                                    bincode::serialize(&InnerMsg::Handshake {
+                                        user: omc.user.address.clone(),
+                                    })
+                                    .unwrap(),
+                                )
+                                .unwrap();
+
                             sending_message = Message::text(
                                 serde_json::to_string(&OutgoingMsg::FoundMatch {
                                     user: users[0].address.clone(),
@@ -124,17 +99,15 @@ pub async fn handle_connection(
                             );
                         }
                     };
-            }
+                }
 
-            OutcomingMsg::Update { res } => {
-                let _ = async {
+                OutcomingMsg::Update { res } => {
                     let omc = ongoing_match.clone();
                     let mut omc = omc.lock().unwrap();
                     let user_addr = omc.user.address.clone();
 
-                    let _ = omc.update_result(&user_addr.clone(), res);
+                    omc.update_result(&user_addr.clone(), res);
 
-                    // checking for done situation
                     if (omc.contestant.result.len() + omc.user.result.len()) == 6_usize {
                         let res: Vec<bool> = omc
                             .user
@@ -142,7 +115,8 @@ pub async fn handle_connection(
                             .iter()
                             .chain(omc.contestant.result.iter())
                             .cloned()
-                            .collect(); // sending inner done message
+                            .collect();
+
                         omc.contestant
                             .thread_tx
                             .as_mut()
@@ -151,6 +125,7 @@ pub async fn handle_connection(
                                 bincode::serialize(&InnerMsg::Done { res: res.clone() }).unwrap(),
                             )
                             .unwrap();
+
                         let res = OutgoingMsg::FinishMatchWithResults {
                             user: omc.user.result.clone(),
                             contestant: omc.contestant.result.clone(),
@@ -162,7 +137,7 @@ pub async fn handle_connection(
                             .send(Message::text(serde_json::to_string(&res).unwrap()))
                             .await
                             .unwrap();
-                        // Ensure all messages are sent before shutting down
+
                         outgoing_multi
                             .clone()
                             .lock()
@@ -174,7 +149,7 @@ pub async fn handle_connection(
                         todo!("now must gracefully shutdown the thread and send the finish message")
                     }
                     if omc.user.result.len() == 3_usize {
-                        let res: Vec<bool> = omc.user.result.clone(); // sending inner done message
+                        let res: Vec<bool> = omc.user.result.clone();
                         omc.contestant
                             .thread_tx
                             .as_mut()
@@ -184,7 +159,7 @@ pub async fn handle_connection(
                     }
                     if omc.contestant.result.len() == omc.user.result.len() {
                         sending_message = Message::text(
-                            &serde_json::to_string(&OutgoingMsg::NextRound {}).unwrap(),
+                            serde_json::to_string(&OutgoingMsg::NextRound {}).unwrap(),
                         )
                     } else {
                         omc.contestant
@@ -194,13 +169,9 @@ pub async fn handle_connection(
                             .unbounded_send(bincode::serialize(&InnerMsg::Update { res }).unwrap())
                             .unwrap();
                     }
+                }
+            };
 
-                    drop(omc)
-                };
-            }
-        };
-
-        let _ = async {
             if outgoing_multi
                 .clone()
                 .lock()
@@ -211,40 +182,41 @@ pub async fn handle_connection(
             {
                 println!("Error sending message to WebSocket");
             }
-        };
-        future::ok(())
+
+            future::ok(())
+        }
     });
 
-    // inner platform
     let receive_from_others = rx
         .map(|msg| {
-            // in here we got the update result from the contestant operating thread. we will notify the client to go to the next round if not completed the match yet
-            // and we will send a done message and the array of six specifying the results of the contestant and the current user.
+            let ongoing_match = ongoing_match.clone();
+            let outgoing_multi = outgoing_multi.clone();
+            let found_queue = found_queue.clone();
+            let tx = tx.clone();
 
-            match bincode::deserialize(&msg).unwrap() {
-                InnerMsg::Fetch {} => {
-                    let omc = ongoing_match.clone();
-                    let mut omc = omc.lock().unwrap();
-                    let tc = thread_consumer.clone();
-                    let tc = tc.lock().unwrap();
-                    let fq = found_queue.clone();
-                    let fq = fq.lock().unwrap();
+            async move {
+                match bincode::deserialize(&msg).unwrap() {
+                    InnerMsg::Fetch {} => {
+                        let omc = ongoing_match.clone();
+                        let mut omc = omc.lock().unwrap();
+                        let tc = thread_consumer.clone();
+                        let tc = tc.lock().unwrap();
+                        let fq = found_queue.clone();
+                        let fq = fq.lock().unwrap();
 
-                    // means we are the fetched one we have to update our states and we need to wait for a handshake init message
-                    let opponent_data = fq.get(&tc.wallet_address).unwrap();
+                        let opponent_data = fq.get(&tc.wallet_address).unwrap();
 
-                    *omc = OngoingMatch {
-                        reward: tc.entrance_amount,
-                        user: User {
-                            address: tc.wallet_address.clone(),
-                            result: vec![],
-                            thread_tx: Some(tx.clone()),
-                        },
-                        contestant: opponent_data.clone(),
-                    };
+                        *omc = OngoingMatch {
+                            reward: tc.entrance_amount,
+                            user: User {
+                                address: tc.wallet_address.clone(),
+                                result: vec![],
+                                thread_tx: Some(tx.clone()),
+                            },
+                            contestant: opponent_data.clone(),
+                        };
 
-                    let _ = async {
-                        let som = outgoing_multi
+                        outgoing_multi
                             .clone()
                             .lock()
                             .unwrap()
@@ -256,25 +228,11 @@ pub async fn handle_connection(
                             ))
                             .await
                             .unwrap();
-                    };
-
-                    drop(omc);
-                    drop(tc);
-                    drop(fq);
-
-                    future::ok::<Message, Error>(Message::text("hi this is message"))
-                }
-                InnerMsg::Update { res } => {
-                    let _ = async {
-                        // updating our contestant state
-                        // our state will be updated through the ws stream message
-                        // if our state was updated we tell the user to the next round and if not we do not do anything and the user will be announced through the ws stream handle
-                        // letting the client go to the next round
+                    }
+                    InnerMsg::Update { res } => {
                         let omc = ongoing_match.clone();
                         let mut omc = omc.lock().unwrap();
 
-                        // the done situation must be handled using a different message
-                        // updating the contestant result
                         let con = omc.contestant.address.clone();
                         if !omc.update_result(&con, res) {
                             panic!("couldn't update the contestant result");
@@ -291,17 +249,11 @@ pub async fn handle_connection(
                                 .await
                                 .unwrap();
                         }
-                    };
-                    future::ok(Message::text("string"))
-                }
-                InnerMsg::Done { res } => {
-                    let _ = async {
-                        // updating our state
+                    }
+                    InnerMsg::Done { res } => {
                         let omc = ongoing_match.clone();
                         let mut omc = omc.lock().unwrap();
                         if res.len() == 3_usize {
-                            // the done situation must be handled using a different message
-                            // updating the contestant result
                             let con = omc.contestant.address.clone();
                             if !omc.update_result(&con, res[2]) {
                                 panic!("couldn't update the contestant result");
@@ -310,14 +262,13 @@ pub async fn handle_connection(
                                 panic!("results different !");
                             }
                         } else {
-                            // its 6, checking with our result and sending out the result
                             let thread_res: Vec<bool> = omc
                                 .user
                                 .result
                                 .iter()
                                 .chain(omc.contestant.result.iter())
                                 .cloned()
-                                .collect(); // sending inner done message
+                                .collect();
 
                             if res != thread_res {
                                 panic!("results different !");
@@ -342,31 +293,22 @@ pub async fn handle_connection(
                                 .await
                                 .unwrap();
                         }
-                    };
-                    future::ok(Message::text("string"))
-                }
-                InnerMsg::Handshake { user } => {
-                    // we must check the user pass in the message with the one set in our state
-                    // we must send back the handshake stablish in case of success
-                    // we must send a stream message to start the game
-                    let _ = async {
+                    }
+                    InnerMsg::Handshake { user } => {
                         let omc = ongoing_match.clone();
                         let mut omc = omc.lock().unwrap();
                         if omc.user.address != user {
-                            // ping
                             omc.contestant
                                 .thread_tx
                                 .as_mut()
                                 .unwrap()
                                 .unbounded_send(
-                                    bincode::serialize(&&InnerMsg::Handshake {
-                                        user: user.clone(),
-                                    })
-                                    .unwrap(),
+                                    bincode::serialize(&InnerMsg::Handshake { user: user.clone() })
+                                        .unwrap(),
                                 )
                                 .unwrap();
                         }
-                        // pong
+
                         outgoing_multi
                             .clone()
                             .lock()
@@ -377,16 +319,12 @@ pub async fn handle_connection(
                             .await
                             .unwrap();
 
-                        // deleting from the found queue
                         let fq = found_queue.clone();
                         let mut fq = fq.lock().unwrap();
-                        let _ = fq.remove(&omc.user.address).unwrap();
-                    };
-
-                    future::ok(Message::text("string"))
+                        fq.remove(&omc.user.address).unwrap();
+                    }
                 }
             }
-            // Ok(Message::text("asfdassa"))
         })
         .into_future();
 
@@ -394,82 +332,4 @@ pub async fn handle_connection(
     future::select(broadcast_incoming, receive_from_others).await;
 
     println!("{} disconnected", &addr);
-    // peer_map.lock().unwrap().remove(&addr);
-}
-
-pub fn find_match(
-    _user: User,
-    _entrance_tokens: i32,
-    wait_queue: WaitQueue,
-    found_queue: FoundQueue,
-) -> MatchResponse {
-    // getting the lock over the queue
-    let mut _q = wait_queue.lock().unwrap();
-    // Get the list of users for the given entrance tokens
-    let users = _q.entry(_entrance_tokens).or_insert_with(Vec::new);
-
-    match users.len() {
-        0 => {
-            // No users in the queue, add the  user
-            users.push(_user);
-            MatchResponse::Added(users.len() - 1)
-        }
-        1 => {
-            // One user in the queue
-            if users[0].address == _user.address {
-                MatchResponse::Wait("No one found, wait ...".into())
-            } else {
-                // Match found with the existing user
-                let matched_user = users.pop().unwrap();
-                // telling each thread to pick their opponents
-                // adding the users to the found queue
-                let mut fq = found_queue.lock().unwrap();
-                fq.insert(
-                    matched_user.address.clone(),
-                    User {
-                        address: _user.address.clone(),
-                        result: _user.result.clone(),
-                        thread_tx: _user.thread_tx.clone(),
-                    },
-                );
-
-                let _ = matched_user
-                    .clone()
-                    .thread_tx
-                    .unwrap()
-                    .unbounded_send(bincode::serialize(&InnerMsg::Fetch {}).unwrap())
-                    .unwrap();
-                MatchResponse::FoundMatch(vec![matched_user.clone(), _user.clone()])
-            }
-        }
-        _ => {
-            if let Some((index, _)) = users
-                .iter()
-                .enumerate()
-                .find(|(_, u)| u.address != _user.address)
-            {
-                // Remove the matched user and the requesting user
-                let matched_user = users.remove(index);
-                let mut fq = found_queue.lock().unwrap();
-                fq.insert(
-                    matched_user.address.clone(),
-                    User {
-                        address: _user.address.clone(),
-                        result: _user.result.clone(),
-                        thread_tx: _user.thread_tx.clone(),
-                    },
-                );
-
-                let _ = matched_user
-                    .clone()
-                    .thread_tx
-                    .unwrap()
-                    .unbounded_send(bincode::serialize(&InnerMsg::Fetch {}).unwrap())
-                    .unwrap();
-                MatchResponse::FoundMatch(vec![matched_user.clone(), _user.clone()])
-            } else {
-                panic!("impossible panic !!")
-            }
-        }
-    }
 }

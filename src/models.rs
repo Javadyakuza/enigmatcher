@@ -10,7 +10,7 @@ use std::{collections::HashMap, sync::Arc};
 use futures_channel::mpsc;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 // use futures_util::Future;
 // the ongoing matche must be saved in a state so that we know the users can have a game in two different dvices.
 #[derive(Default)]
@@ -75,6 +75,7 @@ impl New for WaitQueue {
     }
 }
 
+#[derive(Debug)]
 pub enum MatchResponse {
     Added(usize),
     Wait(String),

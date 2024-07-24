@@ -25,23 +25,7 @@ async fn main() -> Result<(), Error> {
 
     let wait_queue: WaitQueue = WaitQueue::new_empty();
     let found_queue: FoundQueue = FoundQueue::new_empty();
-    println!(
-        "{:?}{:?}",
-        bincode::serialize(&OutcomingMsg::FindMatch {
-            incoming_user: IncomingUser {
-                wallet_address: "some wallet address".into(),
-                entrance_amount: 2
-            }
-        })
-        .unwrap(), 
-        bincode::serialize(&r#""OutcomingMsg"::"FindMatch" {
-            "incoming_user": "IncomingUser" {
-                "wallet_address": "some wallet address",
-                "entrance_amount": 2
-            }
-        }"#)
-        .unwrap()
-    );
+
     // Let's spawn the handling of each connection in a separate task.
     while let Ok((stream, addr)) = listener.accept().await {
         tokio::spawn(handle_connection(
@@ -54,3 +38,4 @@ async fn main() -> Result<(), Error> {
 
     Ok(())
 }
+
