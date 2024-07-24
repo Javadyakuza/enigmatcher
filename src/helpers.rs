@@ -1,27 +1,17 @@
-use std::{
-    borrow::BorrowMut, collections::HashMap, env, fmt::format, io::Error, net::SocketAddr,
-    ops::Deref, rc::Rc, sync::Arc,
-};
+use std::{io::Error, net::SocketAddr, sync::Arc};
 
 use futures_channel::mpsc::{unbounded, UnboundedSender};
 use futures_util::{
-    future::{self, Map, Ready},
+    future::{self},
     pin_mut, SinkExt, StreamExt, TryStreamExt,
 };
-use log::info;
-use rocket::http::ext::IntoCollection;
-use serde::Serialize;
-use tokio::{
-    net::{TcpListener, TcpStream},
-    sync::{mpsc::UnboundedReceiver, Mutex},
-};
-use tokio_tungstenite::{
-    tungstenite::{Message, WebSocket},
-    WebSocketStream,
-};
+
+use tokio::{net::TcpStream, sync::Mutex};
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::models::{
-    FoundQueue, IncomingUser, InnerMsg, MatchResponse, OngoingMatch, OuterMsg, User, WaitQueue,
+    FoundQueue, IncomingUser, InnerMsg, MatchResponse, OngoingMatch, OutcomingMsg, OutgoingMsg,
+    User, WaitQueue,
 };
 
 pub type Tx = UnboundedSender<Message>;
@@ -44,10 +34,10 @@ pub async fn handle_connection(
     // Insert the write part of this peer to the peer map.
     let (tx, rx) = unbounded();
     // peer_map.lock().unwrap().insert(addr, tx);
-    let mut rx: futures_channel::mpsc::UnboundedReceiver<Vec<u8>> = rx;
+    let rx: futures_channel::mpsc::UnboundedReceiver<Vec<u8>> = rx;
     println!("{:?}", tx);
 
-    let (mut outgoing, incoming) = ws_stream.split();
+    let (outgoing, incoming) = ws_stream.split();
     let outgoing_multi = Arc::new(Mutex::new(outgoing));
 
     let mut ongoing_match: Arc<Mutex<OngoingMatch>> = Arc::new(Mutex::new(Default::default()));
@@ -56,8 +46,9 @@ pub async fn handle_connection(
     let broadcast_incoming = incoming.try_for_each(|msg| {
         let mut match_responses: MatchResponse = Default::default();
         let mut sending_message: Message = Message::text("initial text");
-        let some = match bincode::deserialize(&msg.into_data()).unwrap() {
-            OuterMsg::FindMatch { incoming_user } => {
+        // println!("{:?}",&msg.clone().into_text().unwrap());
+        match serde_json::from_str(&msg.into_text().unwrap()).unwrap() {
+            OutcomingMsg::FindMatch { incoming_user } => {
                 let _ = async {
                     let mut tc = thread_consumer.clone();
                     let mut tc = tc.lock().await;
@@ -81,13 +72,19 @@ pub async fn handle_connection(
                 match match_responses {
                     MatchResponse::Added(idx) => {
                         // telling user to wait
-                        sending_message = Message::text("wait ...");
+                        sending_message = Message::text(
+                            serde_json::to_string(&OutgoingMsg::Wait {
+                                msg: "added to queue, wait".into(),
+                            })
+                            .unwrap(),
+                        );
                     }
                     MatchResponse::Wait(msg) => {
-                        sending_message = Message::text(msg);
+                        sending_message = Message::text(
+                            serde_json::to_string(&OutgoingMsg::Wait { msg }).unwrap(),
+                        );
                     }
                     MatchResponse::FoundMatch(users) => {
-                        sending_message = Message::text(format!("{:?}", users[0]));
                         let _ = async {
                             let omc = ongoing_match.clone();
                             let mut omc = omc.lock().await;
@@ -113,14 +110,24 @@ pub async fn handle_connection(
                                 .unwrap();
                             drop(omc);
                         };
-                        sending_message = Message::text("match found");
+                        sending_message = Message::text(
+                            serde_json::to_string(&OutgoingMsg::FoundMatch {
+                                user: users[0].address.clone(),
+                            })
+                            .unwrap(),
+                        );
                     }
                     MatchResponse::Undefined(msg) => {
-                        sending_message = Message::text("undefined behavior accrued !!");
+                        sending_message = Message::text(
+                            serde_json::to_string(&OutgoingMsg::Undefined {
+                                msg: "undefined behavior".into(),
+                            })
+                            .unwrap(),
+                        );
                     }
                 }
             }
-            OuterMsg::Update { res } => {
+            OutcomingMsg::Update { res } => {
                 let _ = async {
                     let omc = ongoing_match.clone();
                     let mut omc = omc.lock().await;
@@ -145,14 +152,15 @@ pub async fn handle_connection(
                                 bincode::serialize(&InnerMsg::Done { res: res.clone() }).unwrap(),
                             )
                             .unwrap();
-
+                        let res = OutgoingMsg::FinishMatchWithResults {
+                            user: omc.user.result.clone(),
+                            contestant: omc.contestant.result.clone(),
+                        };
                         outgoing_multi
                             .clone()
                             .lock()
                             .await
-                            .send(Message::binary(
-                                res.iter().map(|&b| b as u8).collect::<Vec<u8>>(),
-                            ))
+                            .send(Message::text(serde_json::to_string(&res).unwrap()))
                             .await
                             .unwrap();
                         // Ensure all messages are sent before shutting down
@@ -170,7 +178,9 @@ pub async fn handle_connection(
                             .unwrap();
                     }
                     if omc.contestant.result.len() == omc.user.result.len() {
-                        sending_message = Message::text("next_round")
+                        sending_message = Message::text(
+                            &serde_json::to_string(&OutgoingMsg::NextRound {}).unwrap(),
+                        )
                     } else {
                         omc.contestant
                             .thread_tx
@@ -201,9 +211,10 @@ pub async fn handle_connection(
     });
 
     // inner platform
-    let receive_from_others = rx.map(|msg| {
-        // in here we got the update result from the contestant operating thread. we will notify the client to go to the next round if not completed the match yet
-        // and we will send a done message and the array of six specifying the results of the contestant and the current user.
+    let receive_from_others = rx
+        .map(|msg| {
+            // in here we got the update result from the contestant operating thread. we will notify the client to go to the next round if not completed the match yet
+            // and we will send a done message and the array of six specifying the results of the contestant and the current user.
 
             match bincode::deserialize(&msg).unwrap() {
                 InnerMsg::Fetch {} => {
@@ -232,7 +243,12 @@ pub async fn handle_connection(
                             .clone()
                             .lock()
                             .await
-                            .send(Message::text("match found"))
+                            .send(Message::text(
+                                serde_json::to_string(&OutgoingMsg::FoundMatch {
+                                    user: omc.contestant.address.clone(),
+                                })
+                                .unwrap(),
+                            ))
                             .await
                             .unwrap();
 
@@ -263,7 +279,9 @@ pub async fn handle_connection(
                                 .clone()
                                 .lock()
                                 .await
-                                .send(Message::text("next_round"))
+                                .send(Message::text(
+                                    serde_json::to_string(&OutgoingMsg::NextRound {}).unwrap(),
+                                ))
                                 .await
                                 .unwrap();
                         }
@@ -298,14 +316,15 @@ pub async fn handle_connection(
                             if res != thread_res {
                                 panic!("results different !");
                             }
-
+                            let res = OutgoingMsg::FinishMatchWithResults {
+                                user: omc.user.result.clone(),
+                                contestant: omc.contestant.result.clone(),
+                            };
                             outgoing_multi
                                 .clone()
                                 .lock()
                                 .await
-                                .send(Message::binary(
-                                    res.iter().map(|&b| b as u8).collect::<Vec<u8>>(),
-                                ))
+                                .send(Message::text(serde_json::to_string(&res).unwrap()))
                                 .await
                                 .unwrap();
 
@@ -340,12 +359,8 @@ pub async fn handle_connection(
                             .clone()
                             .lock()
                             .await
-                            .send(Message::binary(
-                                bincode::serialize(&IncomingUser {
-                                    wallet_address: omc.contestant.address.clone(),
-                                    entrance_amount: omc.reward,
-                                })
-                                .unwrap(),
+                            .send(Message::text(
+                                serde_json::to_string(&OutgoingMsg::Start {}).unwrap(),
                             ))
                             .await
                             .unwrap();
@@ -359,11 +374,12 @@ pub async fn handle_connection(
                     future::ok(Message::text("string"))
                 }
             }
-        // Ok(Message::text("asfdassa"))
-    });
+            // Ok(Message::text("asfdassa"))
+        })
+        .into_future();
 
     pin_mut!(broadcast_incoming, receive_from_others);
-    future::select(broadcast_incoming, future::ready(receive_from_others)).await;
+    future::select(broadcast_incoming, receive_from_others).await;
 
     println!("{} disconnected", &addr);
     // peer_map.lock().unwrap().remove(&addr);

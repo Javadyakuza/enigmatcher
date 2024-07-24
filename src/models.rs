@@ -5,18 +5,12 @@
 // the struct will have the update and finish game room functionlaities.
 // the struct must have a function that will finilize the game room. the transaction part i mean.
 
-use std::{
-    collections::HashMap, default, hash::Hash, io::{Read, Write}, sync::Arc
-};
+use std::{collections::HashMap, sync::Arc};
 
 use futures_channel::mpsc;
-use futures_util::{
-    stream::{SplitSink, SplitStream},
-    AsyncRead, AsyncWrite, Future, Sink, Stream,
-};
+
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
-use tokio_tungstenite::{tungstenite::{stream::MaybeTlsStream, Message}, WebSocketStream};
 // use futures_util::Future;
 // the ongoing matche must be saved in a state so that we know the users can have a game in two different dvices.
 #[derive(Default)]
@@ -81,7 +75,6 @@ impl New for WaitQueue {
     }
 }
 
-
 pub enum MatchResponse {
     Added(usize),
     Wait(String),
@@ -111,17 +104,36 @@ pub struct IncomingUser {
     pub wallet_address: String,
     pub entrance_amount: i32,
 }
-
+// {"FindMatch": {"IncomingUser": "wallet_address", "entrance_amount": 2 }}
 #[derive(Serialize, Deserialize)]
 pub enum InnerMsg {
-    Fetch{}, 
-    Update{res: bool},
-    Done {res: Vec<bool>}, // array of six, both users are finished, array of 3 one user is finished 
-    Handshake {user: String}, // the initiator address
+    Fetch {},
+    Update { res: bool },
+    Done { res: Vec<bool> }, // array of six, both users are finished, array of 3 one user is finished
+    Handshake { user: String }, // the initiator address
 }
 
 #[derive(Serialize, Deserialize)]
-pub enum OuterMsg {
-    FindMatch{incoming_user: IncomingUser}, 
-    Update{res: bool},
+pub enum OutcomingMsg {
+    FindMatch { incoming_user: IncomingUser },
+    Update { res: bool },
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum OutgoingMsg {
+    FinishMatchWithResults {
+        user: Vec<bool>,
+        contestant: Vec<bool>,
+    },
+    FoundMatch {
+        user: String,
+    },
+    Wait {
+        msg: String,
+    },
+    Undefined {
+        msg: String,
+    },
+    NextRound {},
+    Start {},
 }
