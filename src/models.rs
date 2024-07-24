@@ -118,6 +118,13 @@ pub struct IncomingUser {
 pub enum InnerMsg {
     Fetch{}, 
     Update{res: bool},
+    Done {res: Vec<bool>}, // array of six, both users are finished, array of 3 one user is finished 
     HandshakeInit {user: String}, // the initiator address
     HandshakeStablish {user: String} // the initiating address
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum OuterMsg {
+    FindMatch{incoming_user: IncomingUser}, 
+    Update{res: bool},
 }

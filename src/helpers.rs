@@ -21,7 +21,7 @@ use tokio_tungstenite::{
 };
 
 use crate::models::{
-    FoundQueue, IncomingUser, InnerMsg, MatchResponse, OngoingMatch, User, WaitQueue,
+    FoundQueue, IncomingUser, InnerMsg, MatchResponse, OngoingMatch, OuterMsg, User, WaitQueue,
 };
 
 pub type Tx = UnboundedSender<Message>;
@@ -56,108 +56,126 @@ pub async fn handle_connection(
     let broadcast_incoming = incoming.try_for_each(|msg| {
         let mut match_responses: MatchResponse = Default::default();
         let mut sending_message: Message = Message::text("initial text");
-        let text_msg = msg.to_text().unwrap();
+        let some = match bincode::deserialize(&msg.into_data()).unwrap() {
+            OuterMsg::FindMatch { incoming_user } => {
+                let _ = async {
+                    let mut tc = thread_consumer.clone();
+                    let mut tc = tc.lock().await;
+                    *tc = incoming_user.clone();
+                    drop(tc);
+                };
 
-        if text_msg.contains("wallet_address") {
-            let incoming_user: IncomingUser = serde_json::from_str(text_msg).unwrap();
-            let _ = async {
-                let mut tc = thread_consumer.clone();
-                let mut tc = tc.lock().await;
-                *tc = incoming_user.clone();
-                drop(tc);
-            };
+                let _ = async {
+                    match_responses = find_match(
+                        User {
+                            address: incoming_user.wallet_address.clone(),
+                            result: vec![],
+                            thread_tx: Some(tx.clone()),
+                        },
+                        incoming_user.entrance_amount,
+                        wait_queue.clone(),
+                        found_queue.clone(),
+                    )
+                    .await;
+                };
+                match match_responses {
+                    MatchResponse::Added(idx) => {
+                        // telling user to wait
+                        sending_message = Message::text("wait ...");
+                    }
+                    MatchResponse::Wait(msg) => {
+                        sending_message = Message::text(msg);
+                    }
+                    MatchResponse::FoundMatch(users) => {
+                        sending_message = Message::text(format!("{:?}", users[0]));
+                        let _ = async {
+                            let omc = ongoing_match.clone();
+                            let mut omc = omc.lock().await;
 
-            let _ = async {
-                match_responses = find_match(
-                    User {
-                        address: incoming_user.wallet_address.clone(),
-                        result: vec![],
-                        thread_tx: Some(tx.clone()),
-                    },
-                    incoming_user.entrance_amount,
-                    wait_queue.clone(),
-                    found_queue.clone(),
-                )
-                .await;
-            };
-            match match_responses {
-                MatchResponse::Added(idx) => {
-                    // telling user to wait
-                    sending_message = Message::text("wait ...");
-                }
-                MatchResponse::Wait(msg) => {
-                    sending_message = Message::text(msg);
-                }
-                MatchResponse::FoundMatch(users) => {
-                    sending_message = Message::text(format!("{:?}", users[0]));
-                    let _ = async {
-                        let omc = ongoing_match.clone();
-                        let mut omc = omc.lock().await;
+                            *omc = OngoingMatch {
+                                reward: incoming_user.entrance_amount,
+                                user: users[1].clone(),
+                                contestant: users[0].clone(),
+                            };
 
-                        *omc = OngoingMatch {
-                            reward: incoming_user.entrance_amount,
-                            user: users[1].clone(),
-                            contestant: users[0].clone(),
+                            // handshaking
+                            let _ = omc
+                                .contestant
+                                .thread_tx
+                                .clone()
+                                .unwrap()
+                                .unbounded_send(
+                                    bincode::serialize(&&InnerMsg::HandshakeInit {
+                                        user: omc.user.address.clone(),
+                                    })
+                                    .unwrap(),
+                                )
+                                .unwrap();
+                            drop(omc);
                         };
+                        sending_message = Message::text("wait ...");
+                    }
+                    MatchResponse::Undefined(msg) => {
+                        sending_message = Message::text("undefined behavior accrued !!");
+                    }
 
-                        // handshaking
-                        let _ = omc
-                            .contestant
-                            .thread_tx
-                            .clone()
-                            .unwrap()
-                            .unbounded_send(
-                                bincode::serialize(&&InnerMsg::HandshakeInit {
-                                    user: omc.user.address.clone(),
-                                })
-                                .unwrap(),
-                            )
-                            .unwrap();
-                        drop(omc);
-                    };
-                    sending_message = Message::text("wait ...");
-                }
-                MatchResponse::Undefined(msg) => {
-                    sending_message = Message::text("undefined behavior accrued !!");
-                }
-
-                MatchResponse::Done(result) => {
-                    todo!("update the state variable and finish the game room")
-                }
-                MatchResponse::UpdateResult(result) => {
-                    todo!("update the state variable and finish the game room")
+                    MatchResponse::Done(result) => {
+                        todo!("update the state variable and finish the game room")
+                    }
+                    MatchResponse::UpdateResult(result) => {
+                        todo!("update the state variable and finish the game room")
+                    }
                 }
             }
-        } else {
-            let _ = async {
-                let omc = ongoing_match.clone();
-                let mut omc = omc.lock().await;
-                let user_addr = omc.user.address.clone();
-                let res = if text_msg == "true" {
-                    true
-                } else if text_msg == "false" {
-                    false
-                } else {
-                    panic!("unsupported result")
+            OuterMsg::Update { res } => {
+                let _ = async {
+                    let omc = ongoing_match.clone();
+                    let mut omc = omc.lock().await;
+                    let user_addr = omc.user.address.clone();
+
+                    let _ = omc.update_result(&user_addr.clone(), res);
+
+                    // checking for done situation
+                    if (omc.contestant.result.len() + omc.user.result.len()) == 6_usize {
+                        let res: Vec<bool> = omc
+                            .user
+                            .result
+                            .iter()
+                            .chain(omc.contestant.result.iter())
+                            .cloned()
+                            .collect(); // sending inner done message
+                        omc.contestant
+                            .thread_tx
+                            .as_mut()
+                            .unwrap()
+                            .unbounded_send(bincode::serialize(&InnerMsg::Done { res }).unwrap())
+                            .unwrap();
+                    }
+                    if omc.user.result.len() == 3_usize {
+                        let res: Vec<bool> = omc.user.result.clone(); // sending inner done message
+                        omc.contestant
+                            .thread_tx
+                            .as_mut()
+                            .unwrap()
+                            .unbounded_send(bincode::serialize(&InnerMsg::Done { res }).unwrap())
+                            .unwrap();
+                    }
+                    if omc.contestant.result.len() == omc.user.result.len() {
+                        sending_message = Message::text("next_round")
+                    } else {
+                        omc.contestant
+                            .thread_tx
+                            .as_mut()
+                            .unwrap()
+                            .unbounded_send(bincode::serialize(&InnerMsg::Update { res }).unwrap())
+                            .unwrap();
+                    }
+
+                    drop(omc)
                 };
-                let _ = omc.update_result(&user_addr.clone(), res);
+            }
+        };
 
-                // notifying the contestant thread that we updated or results
-
-                if omc.contestant.result.len() == omc.user.result.len() {
-                   sending_message = Message::text("next_round")
-                } else {
-                    omc.contestant
-                        .thread_tx
-                        .as_mut()
-                        .unwrap()
-                        .unbounded_send(bincode::serialize(&InnerMsg::Update { res }).unwrap())
-                        .unwrap();
-                }
-
-                drop(omc)
-            };
-        }
         let _ = async {
             if outgoing_multi
                 .clone()
@@ -242,6 +260,7 @@ pub async fn handle_connection(
                 };
                 future::ok(())
             }
+            InnerMsg::Done { res } => future::ok(()),
             InnerMsg::HandshakeInit { user } => {
                 // we must check the user pass in the message with the one set in our state
                 // we must send back the handshake stablish in case of success
