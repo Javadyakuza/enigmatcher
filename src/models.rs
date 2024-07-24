@@ -5,12 +5,15 @@
 // the struct will have the update and finish game room functionlaities.
 // the struct must have a function that will finilize the game room. the transaction part i mean.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, future::Future, sync::Arc};
 
 use futures_channel::mpsc;
 
+use futures_util::{
+ sink::Send};
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use tokio::sync::Mutex;
+// use std::sync::Mutex;
 // use futures_util::Future;
 // the ongoing matche must be saved in a state so that we know the users can have a game in two different dvices.
 #[derive(Default)]
@@ -83,22 +86,24 @@ pub enum MatchResponse {
     Undefined(String),
 }
 
+
 impl Default for MatchResponse {
     fn default() -> Self {
         Self::Undefined("Undefined".to_string())
     }
 }
 
-// impl Future for MatchResponse {
-//     type Output = Self;
+impl Future for MatchResponse {
+    type Output = Self;
 
-//     fn poll(
-//         self: std::pin::Pin<&mut Self>,
-//         cx: &mut std::task::Context<'_>,
-//     ) -> std::task::Poll<Self::Output> {
-//         todo!()
-//     }
-// }
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        todo!()
+    }
+}
+
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct IncomingUser {
