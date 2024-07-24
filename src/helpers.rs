@@ -105,7 +105,7 @@ pub async fn handle_connection(
                                 .clone()
                                 .unwrap()
                                 .unbounded_send(
-                                    bincode::serialize(&&InnerMsg::HandshakeInit {
+                                    bincode::serialize(&&InnerMsg::Handshake {
                                         user: omc.user.address.clone(),
                                     })
                                     .unwrap(),
@@ -113,7 +113,7 @@ pub async fn handle_connection(
                                 .unwrap();
                             drop(omc);
                         };
-                        sending_message = Message::text("wait ...");
+                        sending_message = Message::text("match found");
                     }
                     MatchResponse::Undefined(msg) => {
                         sending_message = Message::text("undefined behavior accrued !!");
@@ -305,21 +305,57 @@ pub async fn handle_connection(
                             ))
                             .await
                             .unwrap();
+                        todo!("gracefully shutting down");
                     }
                 };
                 future::ok(())
             }
-            InnerMsg::HandshakeInit { user } => {
+            InnerMsg::Handshake { user } => {
                 // we must check the user pass in the message with the one set in our state
                 // we must send back the handshake stablish in case of success
                 // we must send a stream message to start the game
+                let _ = async {let omc = ongoing_match.clone();
+                let mut omc = omc.lock().await;
+                    if omc.user.address != user {
+                         // ping
+                         omc.contestant
+                         .thread_tx
+                         .as_mut()
+                         .unwrap()
+                         .unbounded_send(
+                             bincode::serialize(&&InnerMsg::Handshake {
+                                 user: user.clone(),
+                             })
+                             .unwrap(),
+                         )
+                         .unwrap();
+                         
+                    }
+                       // pong 
+                       outgoing_multi
+                       .clone()
+                       .lock()
+                       .await
+                       .send(Message::binary(
+                           bincode::serialize(&IncomingUser {
+                               wallet_address: omc.contestant.address.clone(), 
+                               entrance_amount: omc.reward
+                           }).unwrap()
+                       ))
+                       .await
+                       .unwrap();
+
+                   // deleting from the found queue
+                   let fq = found_queue.clone();
+                   let mut fq = fq.lock().await;
+                   let _ = fq.remove(&omc.user.address).unwrap();
+
+                    
+                };
+
                 future::ok(())
             }
-            InnerMsg::HandshakeStablish { user } => {
-                // we have previously sent a handshake init and now we are stablish
-                // we must send a stream message to start the game
-                future::ok(())
-            }
+            
         }
     });
 
