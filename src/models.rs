@@ -86,8 +86,6 @@ pub enum MatchResponse {
     Added(usize),
     Wait(String),
     FoundMatch(Vec<User>),
-    UpdateResult(Vec<bool>),
-    Done(Vec<bool>),
     Undefined(String),
 }
 

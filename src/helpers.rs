@@ -118,13 +118,6 @@ pub async fn handle_connection(
                     MatchResponse::Undefined(msg) => {
                         sending_message = Message::text("undefined behavior accrued !!");
                     }
-
-                    MatchResponse::Done(result) => {
-                        todo!("update the state variable and finish the game room")
-                    }
-                    MatchResponse::UpdateResult(result) => {
-                        todo!("update the state variable and finish the game room")
-                    }
                 }
             }
             OuterMsg::Update { res } => {
@@ -148,8 +141,22 @@ pub async fn handle_connection(
                             .thread_tx
                             .as_mut()
                             .unwrap()
-                            .unbounded_send(bincode::serialize(&InnerMsg::Done { res }).unwrap())
+                            .unbounded_send(
+                                bincode::serialize(&InnerMsg::Done { res: res.clone() }).unwrap(),
+                            )
                             .unwrap();
+
+                        outgoing_multi
+                            .clone()
+                            .lock()
+                            .await
+                            .send(Message::binary(
+                                res.iter().map(|&b| b as u8).collect::<Vec<u8>>(),
+                            ))
+                            .await
+                            .unwrap();
+
+                        todo!("now must gracefully shutdown the thread and send the finish message")
                     }
                     if omc.user.result.len() == 3_usize {
                         let res: Vec<bool> = omc.user.result.clone(); // sending inner done message
@@ -260,7 +267,48 @@ pub async fn handle_connection(
                 };
                 future::ok(())
             }
-            InnerMsg::Done { res } => future::ok(()),
+            InnerMsg::Done { res } => {
+                let _ = async {
+                    // updating our state
+                    let omc = ongoing_match.clone();
+                    let mut omc = omc.lock().await;
+                    if res.len() == 3_usize {
+                        // the done situation must be handled using a different message
+                        // updating the contestant result
+                        let con = omc.contestant.address.clone();
+                        if !omc.update_result(&con, res[2]) {
+                            panic!("couldn't update the contestant result");
+                        };
+                        if omc.user.result != omc.contestant.result {
+                            panic!("results different !");
+                        }
+                    } else {
+                        // its 6, checking with our result and sending out the result
+                        let thread_res: Vec<bool> = omc
+                            .user
+                            .result
+                            .iter()
+                            .chain(omc.contestant.result.iter())
+                            .cloned()
+                            .collect(); // sending inner done message
+
+                        if res != thread_res {
+                            panic!("results different !");
+                        }
+
+                        outgoing_multi
+                            .clone()
+                            .lock()
+                            .await
+                            .send(Message::binary(
+                                res.iter().map(|&b| b as u8).collect::<Vec<u8>>(),
+                            ))
+                            .await
+                            .unwrap();
+                    }
+                };
+                future::ok(())
+            }
             InnerMsg::HandshakeInit { user } => {
                 // we must check the user pass in the message with the one set in our state
                 // we must send back the handshake stablish in case of success
@@ -273,22 +321,7 @@ pub async fn handle_connection(
                 future::ok(())
             }
         }
-        // // still updating, routing the result letting for the next match
-        // let _ = async {
-        //     if outgoing_multi
-        //         .clone()
-        //         .lock()
-        //         .unwrap()
-        //         .send(Message::binary(msg))
-        //         .await
-        //         .is_err()
-        //     {
-        //         println!("Error sending message to WebSocket");
-        //     }
-        // };
     });
-
-    // }
 
     pin_mut!(broadcast_incoming, receive_from_others);
     future::select(broadcast_incoming, future::ready(receive_from_others)).await;
