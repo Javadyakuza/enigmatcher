@@ -155,6 +155,8 @@ pub async fn handle_connection(
                             ))
                             .await
                             .unwrap();
+                        // Ensure all messages are sent before shutting down
+                        outgoing_multi.clone().lock().await.close().await.unwrap();
 
                         todo!("now must gracefully shutdown the thread and send the finish message")
                     }
@@ -305,7 +307,8 @@ pub async fn handle_connection(
                             ))
                             .await
                             .unwrap();
-                        todo!("gracefully shutting down");
+                        
+                        outgoing_multi.clone().lock().await.close().await.unwrap();
                     }
                 };
                 future::ok(())
@@ -314,48 +317,44 @@ pub async fn handle_connection(
                 // we must check the user pass in the message with the one set in our state
                 // we must send back the handshake stablish in case of success
                 // we must send a stream message to start the game
-                let _ = async {let omc = ongoing_match.clone();
-                let mut omc = omc.lock().await;
+                let _ = async {
+                    let omc = ongoing_match.clone();
+                    let mut omc = omc.lock().await;
                     if omc.user.address != user {
-                         // ping
-                         omc.contestant
-                         .thread_tx
-                         .as_mut()
-                         .unwrap()
-                         .unbounded_send(
-                             bincode::serialize(&&InnerMsg::Handshake {
-                                 user: user.clone(),
-                             })
-                             .unwrap(),
-                         )
-                         .unwrap();
-                         
+                        // ping
+                        omc.contestant
+                            .thread_tx
+                            .as_mut()
+                            .unwrap()
+                            .unbounded_send(
+                                bincode::serialize(&&InnerMsg::Handshake { user: user.clone() })
+                                    .unwrap(),
+                            )
+                            .unwrap();
                     }
-                       // pong 
-                       outgoing_multi
-                       .clone()
-                       .lock()
-                       .await
-                       .send(Message::binary(
-                           bincode::serialize(&IncomingUser {
-                               wallet_address: omc.contestant.address.clone(), 
-                               entrance_amount: omc.reward
-                           }).unwrap()
-                       ))
-                       .await
-                       .unwrap();
+                    // pong
+                    outgoing_multi
+                        .clone()
+                        .lock()
+                        .await
+                        .send(Message::binary(
+                            bincode::serialize(&IncomingUser {
+                                wallet_address: omc.contestant.address.clone(),
+                                entrance_amount: omc.reward,
+                            })
+                            .unwrap(),
+                        ))
+                        .await
+                        .unwrap();
 
-                   // deleting from the found queue
-                   let fq = found_queue.clone();
-                   let mut fq = fq.lock().await;
-                   let _ = fq.remove(&omc.user.address).unwrap();
-
-                    
+                    // deleting from the found queue
+                    let fq = found_queue.clone();
+                    let mut fq = fq.lock().await;
+                    let _ = fq.remove(&omc.user.address).unwrap();
                 };
 
                 future::ok(())
             }
-            
         }
     });
 
