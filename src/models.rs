@@ -116,7 +116,7 @@ pub enum InnerMsg {
     Fetch {},
     Update { res: bool },
     Done { res: Vec<bool> }, // array of six, both users are finished, array of 3 one user is finished
-    Handshake { user: String }, // the initiator address
+    Handshake { user: String, initiator: String }, // the initiator address
 }
 
 #[derive(Serialize, Deserialize)]
