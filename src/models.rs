@@ -114,7 +114,7 @@ pub struct IncomingUser {
 #[derive(Serialize, Deserialize)]
 pub enum InnerMsg {
     Fetch {},
-    Update { res: bool },
+    Update { res: bool, ready: bool },
     Done { res: Vec<bool> }, // array of six, both users are finished, array of 3 one user is finished
     Handshake { user: String, initiator: String }, // the initiator address
 }

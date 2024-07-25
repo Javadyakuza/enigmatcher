@@ -104,7 +104,7 @@ pub async fn handle_connection(
                     drop(tc);
                     drop(fq);
                 }
-                InnerMsg::Update { res } => {
+                InnerMsg::Update { res, ready } => {
                     // updating our contestant state
                     // our state will be updated through the ws stream message
                     // if our state was updated we tell the user to the next round and if not we do not do anything and the user will be announced through the ws stream handle
@@ -119,7 +119,7 @@ pub async fn handle_connection(
                         panic!("couldn't update the contestant result");
                     };
 
-                    if omc.contestant.result.len() == omc.user.result.len() {
+                    if ready {
                         outgoing_clone
                             .clone()
                             .lock()
@@ -382,15 +382,22 @@ pub async fn handle_connection(
                         .unbounded_send(bincode::serialize(&InnerMsg::Done { res }).unwrap())
                         .unwrap();
                 }
+               
                 if omc.contestant.result.len() == omc.user.result.len() {
                     sending_message =
-                        Message::text(&serde_json::to_string(&OutgoingMsg::NextRound {}).unwrap())
+                        Message::text(&serde_json::to_string(&OutgoingMsg::NextRound {}).unwrap());
+                        omc.contestant
+                        .thread_tx
+                        .as_mut()
+                        .unwrap()
+                        .unbounded_send(bincode::serialize(&InnerMsg::Update { res, ready: true }).unwrap())
+                        .unwrap();
                 } else {
                     omc.contestant
                         .thread_tx
                         .as_mut()
                         .unwrap()
-                        .unbounded_send(bincode::serialize(&InnerMsg::Update { res }).unwrap())
+                        .unbounded_send(bincode::serialize(&InnerMsg::Update { res , ready: false}).unwrap())
                         .unwrap();
                 }
 
