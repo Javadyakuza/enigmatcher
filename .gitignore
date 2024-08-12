@@ -9,3 +9,7 @@ MMServer/.env
 ## Scripts ignores
 EnigmaScripts/target/*
 EnigmaScripts/.env
+
+
+## lib ignores
+lib/foundry/target/*
