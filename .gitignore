@@ -1,1 +1,11 @@
 /target
+.env
+
+## server ignores
+MMServer/target/*
+MMServer/.env
+
+
+## Scripts ignores
+EnigmaScripts/target/*
+EnigmaScripts/.env
